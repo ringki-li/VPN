@@ -151,9 +151,9 @@ export default {
 										if (headerEndIndex !== -1 && chunked && decoder.decode(responseBuffer).includes('\r\n0\r\n\r\n')) break;
 									}
 									if (headerEndIndex === -1) throw new Error('代理检测响应头过长或无效');
-									const response = decoder.decode(responseBuffer);
-									let ip = response.match(/(?:^|\n)ip=(.*)/)?.[1];
-								let loc = response.match(/(?:^|\n)loc=(.*)/)?.[1];
+								const response = decoder.decode(responseBuffer);
+								let ip = response.match(/(?:^|\n)ip=(.*)/)?.[1]?.trim();
+								let loc = response.match(/(?:^|\n)loc=(.*)/)?.[1]?.trim();
 								// 如果有代理出口 IP 但没有国家代码，使用 IPINFO_TOKEN 查询真实国家
 								if (ip && !loc) {
 									const IPINFO_TOKEN = env.IPINFO_TOKEN;
