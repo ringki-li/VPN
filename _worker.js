@@ -153,62 +153,29 @@ export default {
 									if (headerEndIndex === -1) throw new Error('代理检测响应头过长或无效');
 									const response = decoder.decode(responseBuffer);
 									let ip = response.match(/(?:^|\n)ip=(.*)/)?.[1];
-									let loc = response.match(/(?:^|\n)loc=(.*)/)?.[1];
-									
-
-// 👉 从环境变量读取 token
-const IPINFO_TOKEN = env.IPINFO_TOKEN;
-const GEO_CACHE = globalThis.GEO_CACHE || (globalThis.GEO_CACHE = new Map());
-
-if ((!ip || !loc) && ip) {
-  try {
-    if (GEO_CACHE.has(ip)) {
-      loc = GEO_CACHE.get(ip);
-    } else {
-      const geoResp = await fetch(`https://ipinfo.io/${ip}?token=${IPINFO_TOKEN}`);
-      const geoData = await geoResp.json();
-      const country = geoData.country || '未知';
-
-      GEO_CACHE.set(ip, country);
-      loc = country;
-    }
-  } catch (e) {}
-}
-
-// ✅ 如果 trace 不完整，用 token 查询
-if ((!ip || !loc) && ip) {
-  try {
-    const geoResp = await fetch(`https://ipinfo.io/${ip}?token=${IPINFO_TOKEN}`, {
-      timeout: 2000
-    });
-    const geoData = await geoResp.json();
-
-    if (!loc) {
-      loc = geoData.country || '未知';
-    }
-  } catch (e) {
-    // 忽略错误，继续走 fallback
-  }
-}
-
-// ✅ 最终兜底（永不未知）
-if (!ip) {
-  ip = request.headers.get('CF-Connecting-IP') || '未知';
-}
-
-if (!loc) {
-  loc = request.cf?.country || '未知';
-}
-									检测代理响应 = {
-  success: false,
-  error: error.message,
-  proxy: 代理协议 + "://" + 完整代理参数,
-  ip: request.headers.get('CF-Connecting-IP') || '未知',
-  loc: request.cf?.country || '未知',
-  colo: request.cf?.colo || '未知',
-  asn: request.cf?.asn || '未知',
-  responseTime: Date.now() - startTime
-};
+								let loc = response.match(/(?:^|\n)loc=(.*)/)?.[1];
+								// 如果有代理出口 IP 但没有国家代码，使用 IPINFO_TOKEN 查询真实国家
+								if (ip && !loc) {
+									const IPINFO_TOKEN = env.IPINFO_TOKEN;
+									if (IPINFO_TOKEN) {
+										try {
+											const geoResp = await fetch(`https://ipinfo.io/${ip}?token=${IPINFO_TOKEN}`);
+											const geoData = await geoResp.json();
+											loc = geoData.country || '未知';
+										} catch (e) {}
+									}
+								}
+								if (!ip) ip = '获取失败';
+								if (!loc) loc = '未知';
+								检测代理响应 = {
+									success: true,
+									proxy: 代理协议 + "://" + 完整代理参数,
+									ip: ip,
+									loc: loc,
+									colo: request.cf?.colo || '未知',
+									asn: request.cf?.asn || '未知',
+									responseTime: Date.now() - startTime
+								};
 								} finally {
 									try { tlsSocket ? tlsSocket.close() : await tcpSocket?.close?.() } catch (e) { }
 								}
@@ -4026,10 +3993,18 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true
     const codeToChinese = Object.fromEntries(uniqueCodes.map((code, idx) => [code, chineseNames[idx]]));
 
     const randomIPs = [];
+    const maxIPsPerCountry = 10; // 每个国家最多10个IP
     for (const [code, group] of countryGroups) {
         const chineseName = codeToChinese[code] || code;
         const flag = countryToFlag(code);
-        const items = group.items;
+        let items = group.items;
+        // 先打乱顺序以保证随机性
+        items.sort(() => Math.random() - 0.5);
+        // 限制每个国家的IP数量不超过10个
+        if (items.length > maxIPsPerCountry) {
+            items = items.slice(0, maxIPsPerCountry);
+        }
+        // 再按IP排序以便显示连续序号
         items.sort((a, b) => a.ip.localeCompare(b.ip));
         items.forEach((item, idx) => {
             const 序号 = (idx + 1).toString().padStart(2, '0');
