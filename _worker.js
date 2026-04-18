@@ -376,39 +376,7 @@ export default {
 							const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
 							const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 							const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
-							// 批量查询所有IP国家\uff08用ipinfo.io\uff09
-							const IP国家缓存 = {};
-							if (env.IPINFO_TOKEN) {
-								const 所有IPv4 = [...new Set(完整优选IP.map(a => a.split(':')[0].split('#')[0].replace(/[\[\]]/g,'')).filter(ip => /^[\d.]+$/.test(ip)))];
-								const 批量 = 10;
-								for (let i = 0; i < 所有IPv4.length; i += 批量) {
-									const 批次 = 所有IPv4.slice(i, i + 批量);
-									try {
-										const res = await fetch(`https://ipinfo.io/batch?token=${env.IPINFO_TOKEN}`, {
-											method: 'POST',
-											headers: { 'Content-Type': 'application/json' },
-											body: JSON.stringify(批次)
-										});
-										if (res.ok) {
-											const data = await res.json();
-											for (const [ip, info] of Object.entries(data)) {
-												if (info?.country) {
-													const cc = info.country;
-													const flag = String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
-													const 国家中文 = {
-														'HK':'香港','SG':'新加坡','JP':'日本','US':'美国','TW':'台湾','KR':'韩国','GB':'英国','CN':'中国','DE':'德国','FR':'法国',
-														'NL':'荷兰','CA':'加拿大','AU':'法洲','RU':'俄罗斯','IN':'印度','BR':'巴西','IT':'意大利','ES':'西班牙','MY':'马来西亚','TH':'泰国',
-														'ID':'印度尼西亚','TR':'土耳其','VN':'越南','PH':'菲律宾','PL':'波兰','UA':'乌克兰','AE':'阿联酋','AR':'阿根廷','SA':'沙特阿拉伯','MO':'泽门',
-														'SE':'瑞典','NO':'挪威','CH':'瑞士','PT':'葡萄牙','FI':'芬兰','DK':'丹麦','CZ':'捷克','RO':'罗马尼亚','HU':'匈牙利','AT':'奥地利',
-														'IL':'以色列','MX':'墨西哥','ZA':'南非','EG':'埃及','PK':'巴基斯坦','KZ':'哈萨克斯坦','NG':'尼日利亚',
-													}[cc] || cc;
-													IP国家缓存[ip] = `${flag} ${国家中文}`;
-												}
-											}
-										}
-									} catch(e) {}
-								}
-							}
+							
 							订阅内容 = 其他节点LINK + 完整优选IP.map(原始地址 => {
 								// 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
 								// 示例: 
@@ -423,7 +391,7 @@ export default {
 								if (match) {
 									节点地址 = match[1];  // IP地址或域名(可能带方括号)
 									节点端口 = match[2] ? match[2] : (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443';  // 端口,TLS默认443 noTLS默认80
-									节点备注 = IP国家缓存[节点地址.replace(/[\[\]]/g,'')] || match[3] || 节点地址;
+									节点备注 = match[3] || 节点地址;
 								} else {
 									// 不规范的格式，跳过处理返回null
 									console.warn(`[订阅内容] 不规范的IP格式已忽略: ${原始地址}`);
@@ -3992,19 +3960,11 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true
     const chineseNames = await Promise.all(chineseNamePromises);
     const codeToChinese = Object.fromEntries(uniqueCodes.map((code, idx) => [code, chineseNames[idx]]));
 
-    const randomIPs = [];
-    const maxIPsPerCountry = 10; // 每个国家最多10个IP
+       const randomIPs = [];
     for (const [code, group] of countryGroups) {
         const chineseName = codeToChinese[code] || code;
         const flag = countryToFlag(code);
-        let items = group.items;
-        // 先打乱顺序以保证随机性
-        items.sort(() => Math.random() - 0.5);
-        // 限制每个国家的IP数量不超过10个
-        if (items.length > maxIPsPerCountry) {
-            items = items.slice(0, maxIPsPerCountry);
-        }
-        // 再按IP排序以便显示连续序号
+        const items = group.items;
         items.sort((a, b) => a.ip.localeCompare(b.ip));
         items.forEach((item, idx) => {
             const 序号 = (idx + 1).toString().padStart(2, '0');
