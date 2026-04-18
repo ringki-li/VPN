@@ -3,6 +3,7 @@ const Version = '2026-04-17 01:57:56';
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
 	'cloudflare\u003asockets';
+let GEO_CACHE = new Map();
 let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0, 启用反代兜底 = true, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
@@ -151,10 +152,63 @@ export default {
 									}
 									if (headerEndIndex === -1) throw new Error('代理检测响应头过长或无效');
 									const response = decoder.decode(responseBuffer);
-									const ip = response.match(/(?:^|\n)ip=(.*)/)?.[1];
-									const loc = response.match(/(?:^|\n)loc=(.*)/)?.[1];
-									if (!ip || !loc) throw new Error('代理检测响应无效');
-									检测代理响应 = { success: true, proxy: 代理协议 + "://" + 完整代理参数, ip, loc, responseTime: Date.now() - startTime };
+									let ip = response.match(/(?:^|\n)ip=(.*)/)?.[1];
+									let loc = response.match(/(?:^|\n)loc=(.*)/)?.[1];
+									
+
+// 👉 从环境变量读取 token
+const IPINFO_TOKEN = env.IPINFO_TOKEN;
+const GEO_CACHE = globalThis.GEO_CACHE || (globalThis.GEO_CACHE = new Map());
+
+if ((!ip || !loc) && ip) {
+  try {
+    if (GEO_CACHE.has(ip)) {
+      loc = GEO_CACHE.get(ip);
+    } else {
+      const geoResp = await fetch(`https://ipinfo.io/${ip}?token=${IPINFO_TOKEN}`);
+      const geoData = await geoResp.json();
+      const country = geoData.country || '未知';
+
+      GEO_CACHE.set(ip, country);
+      loc = country;
+    }
+  } catch (e) {}
+}
+
+// ✅ 如果 trace 不完整，用 token 查询
+if ((!ip || !loc) && ip) {
+  try {
+    const geoResp = await fetch(`https://ipinfo.io/${ip}?token=${IPINFO_TOKEN}`, {
+      timeout: 2000
+    });
+    const geoData = await geoResp.json();
+
+    if (!loc) {
+      loc = geoData.country || '未知';
+    }
+  } catch (e) {
+    // 忽略错误，继续走 fallback
+  }
+}
+
+// ✅ 最终兜底（永不未知）
+if (!ip) {
+  ip = request.headers.get('CF-Connecting-IP') || '未知';
+}
+
+if (!loc) {
+  loc = request.cf?.country || '未知';
+}
+									检测代理响应 = {
+  success: false,
+  error: error.message,
+  proxy: 代理协议 + "://" + 完整代理参数,
+  ip: request.headers.get('CF-Connecting-IP') || '未知',
+  loc: request.cf?.country || '未知',
+  colo: request.cf?.colo || '未知',
+  asn: request.cf?.asn || '未知',
+  responseTime: Date.now() - startTime
+};
 								} finally {
 									try { tlsSocket ? tlsSocket.close() : await tcpSocket?.close?.() } catch (e) { }
 								}
