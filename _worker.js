@@ -154,14 +154,27 @@ export default {
 								const response = decoder.decode(responseBuffer);
 								let ip = response.match(/(?:^|\n)ip=(.*)/)?.[1]?.trim();
 								let loc = response.match(/(?:^|\n)loc=(.*)/)?.[1]?.trim();
-								// 如果有代理出口 IP 但没有国家代码，使用 IPINFO_TOKEN 查询真实国家
+								// 如果有代理出口 IP 但没有国家代码，查询真实国家
 								if (ip && !loc) {
+									// 1. 优先使用 IPINFO_TOKEN 查询
 									const IPINFO_TOKEN = env.IPINFO_TOKEN;
 									if (IPINFO_TOKEN) {
 										try {
-											const geoResp = await fetch(`https://ipinfo.io/${ip}?token=${IPINFO_TOKEN}`);
-											const geoData = await geoResp.json();
-											loc = geoData.country || '未知';
+											const geoResp = await fetch(`https://ipinfo.io/${ip}/json?token=${IPINFO_TOKEN}`);
+											if (geoResp.ok) {
+												const geoData = await geoResp.json();
+												loc = geoData.country;
+											}
+										} catch (e) {}
+									}
+									// 2. 如果 IPINFO 没查到，使用备用 API 查询 (无需 Token)
+									if (!loc) {
+										try {
+											const backupResp = await fetch(`https://ipapi.co/${ip}/json/`);
+											if (backupResp.ok) {
+												const backupData = await backupResp.json();
+												loc = backupData.country_code;
+											}
 										} catch (e) {}
 									}
 								}
