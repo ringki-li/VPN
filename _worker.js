@@ -1,4 +1,4 @@
-﻿const Version = '2026-04-17 01:57:56';
+const Version = '2026-04-17 01:57:56';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -251,7 +251,7 @@ export default {
 						return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
 					} else if (区分大小写访问路径 === 'admin/ADD.txt') {// 处理 admin/ADD.txt 请求，返回本地优选IP
 						let 本地优选IP = await env.KV.get('ADD.txt') || 'null';
-						if (本地优选IP == 'null') 本地优选IP = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (config_JSON.协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[1];
+						if (本地优选IP == 'null') 本地优选IP = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (config_JSON.协议类型 === 'ss' ? config_JSON.SS.TLS : true), env))[1];
 						return new Response(本地优选IP, { status: 200, headers: { 'Content-Type': 'text/plain;charset=utf-8', 'asn': request.cf.asn } });
 					} else if (访问路径 === 'admin/cf.json') {// CF配置文件
 						return new Response(JSON.stringify(request.cf, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -3796,39 +3796,162 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	return config_JSON;
 }
 
-async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true) {
-	const ISP配置 = {
-		'9808': { file: 'cmcc', name: 'CF移动优选' },
-		'4837': { file: 'cu', name: 'CF联通优选' },
-		'17623': { file: 'cu', name: 'CF联通优选' },
-		'17816': { file: 'cu', name: 'CF联通优选' },
-		'4134': { file: 'ct', name: 'CF电信优选' },
-	};
-	const asn = request.cf.asn, isp = ISP配置[asn];
-	const cidr_url = isp ? `https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR/${isp.file}.txt` : 'https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt';
-	const cfname = isp?.name || 'CF官方优选';
-	const cfport = TLS ? [443, 2053, 2083, 2087, 2096, 8443] : [80, 8080, 8880, 2052, 2082, 2086, 2095];
-	let cidrList = [];
-	try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13'] } catch { cidrList = ['104.16.0.0/13'] }
+// ========== IP 归属地查询（带缓存与批量） ==========
+const ipCountryCache = new Map();
+const countryNameCache = new Map();
 
-	const generateRandomIPFromCIDR = (cidr) => {
-		const [baseIP, prefixLength] = cidr.split('/'), prefix = parseInt(prefixLength), hostBits = 32 - prefix;
-		const ipInt = baseIP.split('.').reduce((a, p, i) => a | (parseInt(p) << (24 - i * 8)), 0);
-		const randomOffset = Math.floor(Math.random() * Math.pow(2, hostBits));
-		const mask = (0xFFFFFFFF << hostBits) >>> 0, randomIP = (((ipInt & mask) >>> 0) + randomOffset) >>> 0;
-		return [(randomIP >>> 24) & 0xFF, (randomIP >>> 16) & 0xFF, (randomIP >>> 8) & 0xFF, randomIP & 0xFF].join('.');
-	};
-	const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
-	const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
+const countryToFlag = (code) => {
+    if (!code || code.length !== 2) return '🌍';
+    return String.fromCodePoint(...[...code.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
+};
 
-	const randomIPs = Array.from({ length: count }, (_, index) => {
-		const ip = generateRandomIPFromCIDR(cidrList[Math.floor(Math.random() * cidrList.length)]);
-		const 目标端口 = 指定端口 === -1
-			? cfport[Math.floor(Math.random() * cfport.length)]
-			: (TLS ? 指定端口 : (NOTLS端口[TLS端口.indexOf(Number(指定端口))] ?? 指定端口));
-		return `${ip}:${目标端口}#${cfname}${index + 1}`;
-	});
-	return [randomIPs, randomIPs.join('\n')];
+async function getChineseCountryName(code) {
+    if (!code || code === 'UN') return '未知';
+    if (countryNameCache.has(code)) return countryNameCache.get(code);
+    try {
+        const res = await fetch(`https://restcountries.com/v3.1/alpha/${code}?fields=translations`);
+        if (res.ok) {
+            const data = await res.json();
+            const chineseName = data?.translations?.zho?.common || code;
+            countryNameCache.set(code, chineseName);
+            return chineseName;
+        }
+    } catch (e) {}
+    countryNameCache.set(code, code);
+    return code;
+}
+
+async function 获取IP国家(ip, env) {
+    const cleanIP = ip.replace(/^\[|\]$/g, '');
+    const cached = ipCountryCache.get(cleanIP);
+    if (cached && Date.now() - cached.timestamp < 300000) return cached.countryCode;
+    const token = env.IPINFO_TOKEN;
+    if (!token) return null;
+    try {
+        const res = await fetch(`https://api.ipinfo.io/lite/${cleanIP}?token=${token}`);
+        if (res.ok) {
+            const data = await res.json();
+            const code = data.country_code;
+            ipCountryCache.set(cleanIP, { countryCode: code, timestamp: Date.now() });
+            return code;
+        }
+    } catch (e) {}
+    return null;
+}
+
+async function 批量获取IP国家(ipList, env) {
+    const token = env.IPINFO_TOKEN;
+    if (!token || ipList.length === 0) return {};
+    const uncached = [];
+    const result = {};
+    for (const item of ipList) {
+        const ip = item.ip;
+        const clean = ip.replace(/^\[|\]$/g, '');
+        const cached = ipCountryCache.get(clean);
+        if (cached && Date.now() - cached.timestamp < 300000) {
+            result[ip] = cached.countryCode;
+        } else {
+            uncached.push({ ip, clean });
+        }
+    }
+    if (uncached.length === 0) return result;
+    try {
+        const res = await fetch(`https://api.ipinfo.io/lite/batch?token=${token}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(uncached.map(item => item.clean))
+        });
+        if (res.ok) {
+            const data = await res.json();
+            for (const item of uncached) {
+                const info = data[item.clean];
+                const code = info?.country_code || null;
+                ipCountryCache.set(item.clean, { countryCode: code, timestamp: Date.now() });
+                result[item.ip] = code;
+            }
+        } else {
+            for (const item of uncached) {
+                result[item.ip] = await 获取IP国家(item.ip, env);
+            }
+        }
+    } catch (e) {
+        for (const item of uncached) {
+            result[item.ip] = await 获取IP国家(item.ip, env);
+        }
+    }
+    return result;
+}
+
+// ========== 新版生成随机IP函数 ==========
+async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true, env = null) {
+    const ISP配置 = {
+        '9808': { file: 'cmcc', name: 'CF移动优选' },
+        '4837': { file: 'cu', name: 'CF联通优选' },
+        '17623': { file: 'cu', name: 'CF联通优选' },
+        '17816': { file: 'cu', name: 'CF联通优选' },
+        '4134': { file: 'ct', name: 'CF电信优选' },
+    };
+    const asn = request.cf.asn, isp = ISP配置[asn];
+    const cidr_url = isp ? `https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR/${isp.file}.txt` : 'https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt';
+    const cfport = TLS ? [443, 2053, 2083, 2087, 2096, 8443] : [80, 8080, 8880, 2052, 2082, 2086, 2095];
+    let cidrList = [];
+    try {
+        const res = await fetch(cidr_url);
+        cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13'];
+    } catch {
+        cidrList = ['104.16.0.0/13'];
+    }
+
+    const generateRandomIPFromCIDR = (cidr) => {
+        const [baseIP, prefixLength] = cidr.split('/'), prefix = parseInt(prefixLength), hostBits = 32 - prefix;
+        const ipInt = baseIP.split('.').reduce((a, p, i) => a | (parseInt(p) << (24 - i * 8)), 0);
+        const randomOffset = Math.floor(Math.random() * Math.pow(2, hostBits));
+        const mask = (0xFFFFFFFF << hostBits) >>> 0, randomIP = (((ipInt & mask) >>> 0) + randomOffset) >>> 0;
+        return [(randomIP >>> 24) & 0xFF, (randomIP >>> 16) & 0xFF, (randomIP >>> 8) & 0xFF, randomIP & 0xFF].join('.');
+    };
+
+    const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
+    const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
+
+    const rawIPList = [];
+    for (let i = 0; i < count; i++) {
+        const ip = generateRandomIPFromCIDR(cidrList[Math.floor(Math.random() * cidrList.length)]);
+        const 目标端口 = 指定端口 === -1
+            ? cfport[Math.floor(Math.random() * cfport.length)]
+            : (TLS ? 指定端口 : (NOTLS端口[TLS端口.indexOf(Number(指定端口))] ?? 指定端口));
+        rawIPList.push({ ip, port: 目标端口 });
+    }
+
+    const ipCountries = env ? await 批量获取IP国家(rawIPList, env) : {};
+
+    const countryGroups = new Map();
+    for (const item of rawIPList) {
+        const countryCode = ipCountries[item.ip] || 'UN';
+        if (!countryGroups.has(countryCode)) {
+            countryGroups.set(countryCode, { code: countryCode, items: [] });
+        }
+        countryGroups.get(countryCode).items.push(item);
+    }
+
+    const uniqueCodes = [...countryGroups.keys()];
+    const chineseNamePromises = uniqueCodes.map(code => getChineseCountryName(code));
+    const chineseNames = await Promise.all(chineseNamePromises);
+    const codeToChinese = Object.fromEntries(uniqueCodes.map((code, idx) => [code, chineseNames[idx]]));
+
+    const randomIPs = [];
+    for (const [code, group] of countryGroups) {
+        const chineseName = codeToChinese[code] || code;
+        const flag = countryToFlag(code);
+        const items = group.items;
+        items.sort((a, b) => a.ip.localeCompare(b.ip));
+        items.forEach((item, idx) => {
+            const 序号 = (idx + 1).toString().padStart(2, '0');
+            const 备注 = `${flag}${chineseName}${序号}`;
+            randomIPs.push(`${item.ip}:${item.port}#${备注}`);
+        });
+    }
+
+    return [randomIPs, randomIPs.join('\n')];
 }
 
 async function 整理成数组(内容) {
