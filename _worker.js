@@ -1,4 +1,4 @@
-﻿const Version = '2026-04-17 01:57:56';
+const Version = '2026-04-17 01:57:56';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -3806,7 +3806,7 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true
 	};
 	const asn = request.cf.asn, isp = ISP配置[asn];
 	const cidr_url = isp ? `https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR/${isp.file}.txt` : 'https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt';
-	const cfname = isp?.name || 'CF官方优选';
+	const cfname = isp?.name || '优选线路';
 	const cfport = TLS ? [443, 2053, 2083, 2087, 2096, 8443] : [80, 8080, 8880, 2052, 2082, 2086, 2095];
 	let cidrList = [];
 	try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13'] } catch { cidrList = ['104.16.0.0/13'] }
