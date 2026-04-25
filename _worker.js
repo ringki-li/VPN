@@ -355,6 +355,46 @@ export default {
 							const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
 							const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 							const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
+							// ========== 批量查询国家 & 按国家排序 ==========
+const countryMap = new Map();
+{
+  const ipSet = new Set();
+  完整优选IP.forEach(raw => {
+    const match = raw.match(/^(\[[\da-fA-F:]+\]|[\d.]+)/);
+    if (match) {
+      let ip = match[1].replace(/^\[|\]$/g, '');
+      ip = ip.split(':')[0]; // 去端口
+      ipSet.add(ip);
+    }
+  });
+
+  // 分批并发（每批 5 个）
+  const ips = Array.from(ipSet);
+  const batchSize = 5;
+  for (let i = 0; i < ips.length; i += batchSize) {
+    const batch = ips.slice(i, i + batchSize);
+    await Promise.all(batch.map(async (ip) => {
+      const cc = await getCachedCountry(ip, env.Myth);
+      countryMap.set(ip, cc);
+    }));
+  }
+
+  // 按国家代码排序，相同国家按原顺序
+  // 先给每条原始地址附加一个排序用的键
+  完整优选IP = 完整优选IP.map((addr, idx) => {
+    const m = addr.match(/^(\[[\da-fA-F:]+\]|[\d.]+)/);
+    let ip = '';
+    if (m) {
+      ip = m[1].replace(/^\[|\]$/g, '').split(':')[0];
+    }
+    const cc = countryMap.get(ip) || 'ZZ'; // 未知国家排最后
+    return { addr, idx, cc };
+  }).sort((a, b) => {
+    if (a.cc !== b.cc) return a.cc.localeCompare(b.cc);
+    return a.idx - b.idx; // 保持原顺序
+  }).map(item => item.addr);
+}
+// ========== 批量查询结束 ==========
 							订阅内容 = 其他节点LINK + 完整优选IP.map(原始地址 => {
 								// 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
 								// 示例: 
@@ -369,7 +409,17 @@ export default {
 								if (match) {
 									节点地址 = match[1];  // IP地址或域名(可能带方括号)
 									节点端口 = match[2] ? match[2] : (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443';  // 端口,TLS默认443 noTLS默认80
-									节点备注 = match[3] || 节点地址;  // 备注,默认为地址本身
+									const ipForLookup = 节点地址.replace(/^\[|\]$/g, '').split(':')[0];
+const countryCode = countryMap.get(ipForLookup) || '';
+const countryCN = countryCode ? getCountryChinese(countryCode) : '';
+const flag = countryCode ? countryFlag(countryCode) : '';
+const seq = String(index + 1).padStart(2, '0');
+let 节点备注 = match[3] || 节点地址;
+if (countryCN) {
+  节点备注 = `${seq}. ${flag}${countryCN} - ${节点备注}`;
+} else {
+  节点备注 = `${seq}. ${节点备注}`;
+}
 								} else {
 									// 不规范的格式，跳过处理返回null
 									console.warn(`[订阅内容] 不规范的IP格式已忽略: ${原始地址}`);
@@ -4512,4 +4562,75 @@ async function html1101(host, 访问IP) {
   </script> 
 </body>
 </html>`;
+}
+// ========== GeoIP 国家查询（内存缓存 + KV 缓存） ==========
+const ipGeoMemoryCache = new Map(); // 同一请求内去重
+
+/**
+ * 获取 IP 对应的两位国家代码（如 US, JP）
+ * @param {string} ip - 纯 IP 地址（不带端口）
+ * @param {object} kv - KV 命名空间对象
+ * @returns {Promise<string>}
+ */
+async function getCachedCountry(ip, kv) {
+  // 1. 内存缓存
+  if (ipGeoMemoryCache.has(ip)) return ipGeoMemoryCache.get(ip);
+
+  // 2. KV 缓存
+  const cacheKey = `geoip:${ip}`;
+  try {
+    const cached = await kv.get(cacheKey);
+    if (cached) {
+      ipGeoMemoryCache.set(ip, cached);
+      return cached;
+    }
+  } catch (_) {}
+
+  // 3. 请求外部 API（超时 5 秒）
+  let country = 'UN';
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(
+      `http://ip-api.com/json/${ip}?fields=countryCode`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.countryCode && data.countryCode.length === 2) {
+        country = data.countryCode.toUpperCase();
+      }
+    }
+  } catch (_) {}
+
+  // 4. 写入缓存
+  ipGeoMemoryCache.set(ip, country);
+  try {
+    await kv.put(cacheKey, country, { expirationTtl: 604800 }); // 7天
+  } catch (_) {}
+
+  return country;
+}
+
+// 国家代码 → 中文名映射（可自行补充）
+const countryNameMap = {
+  'US': '美国', 'JP': '日本', 'HK': '中国香港', 'TW': '中国台湾',
+  'SG': '新加坡', 'KR': '韩国', 'DE': '德国', 'GB': '英国',
+  'FR': '法国', 'CA': '加拿大', 'AU': '澳大利亚', 'NL': '荷兰',
+  'IN': '印度', 'BR': '巴西', 'ZA': '南非', 'TR': '土耳其',
+  'IT': '意大利', 'ES': '西班牙', 'SE': '瑞典', 'CH': '瑞士',
+  'RU': '俄罗斯', 'VN': '越南', 'TH': '泰国', 'ID': '印度尼西亚',
+};
+function getCountryChinese(code) {
+  return countryNameMap[code] || code; // 未知则保留代码
+}
+
+/**
+ * 生成国旗 emoji
+ */
+function countryFlag(code) {
+  if (!code || code.length !== 2) return '';
+  const cp = code.toUpperCase().split('').map(c => 0x1F1E6 + c.charCodeAt(0) - 65);
+  return String.fromCodePoint(...cp);
 }
