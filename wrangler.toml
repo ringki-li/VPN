@@ -19,7 +19,6 @@ enabled = false
 persist = true
 head_sampling_rate = 1
 
-
-#[[kv_namespaces]]
-#binding = "KV"			#KV绑定名默认不可修改
-#id = ""				#KV数据库id
+[[kv_namespaces]]
+binding = "KV"      
+id = "9f8043ebf6454041a27cd7b940747c5e"
